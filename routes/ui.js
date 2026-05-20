@@ -80,15 +80,24 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
       return;
     }
     var els=[];
-    data.nodes.forEach(function(n){els.push({data:{id:n.id,label:n.id,color:D.COLORS[n.type]||D.COLORS.other,size:10}})});
+
+    // 计算节点度数 + 分位数分级
+    var degMap={}; data.nodes.forEach(function(n){degMap[n.id]=0});
+    data.edges.forEach(function(e){if(degMap.hasOwnProperty(e.source))degMap[e.source]++;if(degMap.hasOwnProperty(e.target))degMap[e.target]++});
+    var degs=data.nodes.map(function(n){return degMap[n.id]||0}).sort(function(a,b){return a-b});
+    var N=degs.length;
+    var p40=degs[Math.floor(N*0.40)]||0,p70=degs[Math.floor(N*0.70)]||0,p85=degs[Math.floor(N*0.85)]||0,p95=degs[Math.floor(N*0.95)]||0;
+    function degToSize(d){if(d<=0)return 6;if(d>=p95)return 24;if(d>=p85)return 18;if(d>=p70)return 14;if(d>=p40)return 10;return 7}
+
+    data.nodes.forEach(function(n){els.push({data:{id:n.id,label:n.id,color:D.COLORS[n.type]||D.COLORS.other,size:degToSize(degMap[n.id]||0)}})});
     data.edges.forEach(function(e){els.push({data:{id:e.id,source:e.source,target:e.target,label:e.label||''}})});
     var cy=cytoscape({
       container:cyEl,elements:els,
       style:[
-        {selector:'node',style:{'background-color':'data(color)',width:8,height:8,label:'data(label)',color:'#c9d1d9','font-size':9,'text-valign':'center','text-halign':'center','text-background-opacity':0.5,'text-background-color':'#0d1117','text-background-padding':'2px','border-width':1,'border-color':'#30363d','transition-property':'width,height,border-width','transition-duration':150}},
+        {selector:'node',style:{'background-color':'data(color)',width:'data(size)',height:'data(size)',label:'data(label)',color:'#c9d1d9','font-size':9,'text-valign':'center','text-halign':'center','text-background-opacity':0.5,'text-background-color':'#0d1117','text-background-padding':'2px','border-width':1,'border-color':'#30363d','transition-property':'width,height,border-width','transition-duration':150}},
         {selector:'edge',style:{width:0,'line-color':'#30363d','target-arrow-color':'#30363d','target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier',label:'','font-size':8,color:'#8b949e',opacity:0,'transition-property':'opacity,width','transition-duration':200}},
-        {selector:'node:selected',style:{'border-color':'#f78166','border-width':2,width:14,height:14}},
-        {selector:'node.focus',style:{'border-color':'#f78166','border-width':2,width:14,height:14}},
+        {selector:'node:selected',style:{'border-color':'#f78166','border-width':3}},
+        {selector:'node.focus',style:{'border-color':'#f78166','border-width':3}},
         {selector:'edge.show',style:{opacity:1,width:1.5,'line-color':'#8b949e','target-arrow-color':'#8b949e'}},
         {selector:'edge.show:selected',style:{'line-color':'#f78166','target-arrow-color':'#f78166',width:2.5}},
         {selector:'edge.show.labeled',style:{label:'data(label)'}}
