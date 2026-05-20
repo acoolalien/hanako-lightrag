@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-lightrag",
   "name": "LightRAG 知识库",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "基于 LightRAG 的知识图谱 RAG 引擎。支持文档索引、语义检索、知识图谱可视化和多模式查询（local/global/hybrid/mix/naive）。",
   "minAppVersion": "0.140.0",
   "trust": "full-access",
