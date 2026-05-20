@@ -3,12 +3,17 @@
  * 统一 baseUrl 获取、GET/POST 请求、错误处理，避免 3 个 tool 文件重复样板。
  */
 
+let _port = null;
+
 /**
  * 获取 LightRAG Python server 的 base URL
+ * 端口在插件生命周期内不变，首次获取后缓存。
  */
 export async function getBaseUrl(ctx) {
-  const port = (await ctx.config.get("lightragPort")) || 9621;
-  return `http://127.0.0.1:${port}`;
+  if (_port === null) {
+    _port = (await ctx.config.get("lightragPort")) || 9621;
+  }
+  return `http://127.0.0.1:${_port}`;
 }
 
 /**

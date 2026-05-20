@@ -38,20 +38,12 @@ def _check_env():
     print(f"[OK] Python {sys.version.split()[0]}, lightrag-hku {lightrag.__version__}")
 
 # ═══════════════════════════════════════
-#  LightRAG 构造（不初始化存储）
+#  LightRAG 适配器工厂
 # ═══════════════════════════════════════
 
-def _make_rag(work_dir: str, workspace: str = "default"):
-    """构造 LightRAG 实例。
-    根据 STORAGE_BACKEND 环境变量选择存储后端：
-    - json（默认）：JSON 文件 + nano-vectordb + NetworkX
-    - postgres：PostgreSQL + pgvector（一体）
-    """
-    import numpy as np
-    from openai import AsyncOpenAI
-    from lightrag import LightRAG
+def _create_llm_func():
+    """构造 LLM 调用适配器。"""
     from lightrag.llm.openai import openai_complete_if_cache
-    from lightrag.utils import wrap_embedding_func_with_attrs
 
     async def _llm(prompt, system_prompt=None, history_messages=None, **kw):
         if kw.pop("keyword_extraction", False):
@@ -61,12 +53,23 @@ def _make_rag(work_dir: str, workspace: str = "default"):
             prompt=prompt, system_prompt=system_prompt,
             history_messages=history_messages,
             base_url=LLM_BASE_URL, api_key=LLM_API_KEY, **kw)
+    return _llm
 
-    _ec = None
+
+_embed_client = None
+
+def _create_embed_func():
+    """构造 Embedding 适配器。客户端实例缓存复用。"""
+    import numpy as np
+    from openai import AsyncOpenAI
+    from lightrag.utils import wrap_embedding_func_with_attrs
+    global _embed_client
+
     def _get_ec():
-        nonlocal _ec
-        if _ec is None: _ec = AsyncOpenAI(api_key=EMBED_API_KEY, base_url=EMBED_BASE_URL)
-        return _ec
+        global _embed_client
+        if _embed_client is None:
+            _embed_client = AsyncOpenAI(api_key=EMBED_API_KEY, base_url=EMBED_BASE_URL)
+        return _embed_client
 
     @wrap_embedding_func_with_attrs(
         embedding_dim=int(os.getenv("EMBED_DIM", "4096")),
@@ -78,57 +81,93 @@ def _make_rag(work_dir: str, workspace: str = "default"):
             model=os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-8B"),
             input=texts, encoding_format="base64")
         return np.array([np.frombuffer(b64.b64decode(d.embedding), dtype=np.float32) for d in resp.data])
+    return _embed
 
-    et_raw = os.getenv("ENTITY_TYPES", "")
-    if et_raw:
-        import json
-        try: entity_types = json.loads(et_raw)
-        except json.JSONDecodeError: entity_types = [t.strip() for t in et_raw.split(",") if t.strip()]
-    else:
-        entity_types = None
 
-    kw = dict(working_dir=work_dir, llm_model_func=_llm, embedding_func=_embed,
-              llm_model_name=os.getenv("LLM_MODEL", "deepseek-v4-flash"),
-              chunk_token_size=CHUNK_SIZE, chunk_overlap_token_size=CHUNK_OVERLAP_SIZE,
-              entity_extract_max_gleaning=MAX_GLEANING,
-              addon_params={"language": SUMMARY_LANGUAGE})
-    if entity_types: kw["addon_params"]["entity_types"] = entity_types
-
-    # ── 存储后端选择 ──
+def _resolve_storage_kwargs(workspace: str) -> dict:
+    """根据 STORAGE_BACKEND 返回存储相关的 kw 字典。"""
     backend = os.getenv("STORAGE_BACKEND", "json")
     if backend == "postgres":
-        kw["workspace"] = workspace  # PG 用 workspace 参数隔离数据
-        kw["kv_storage"] = "PGKVStorage"
-        kw["vector_storage"] = "PGVectorStorage"
-        kw["graph_storage"] = "NetworkXStorage"  # AGE 扩展需编译，图暂用 NetworkX
-        kw["doc_status_storage"] = "PGDocStatusStorage"
         print(f"[INFO] Using PostgreSQL backend (workspace='{workspace}')")
-
-    # ── Reranker ──
-    if os.getenv("RERANK_ENABLED", "false") == "true" and os.getenv("RERANK_API_KEY"):
-        from openai import AsyncOpenAI
-        _rr_client = AsyncOpenAI(
-            api_key=os.getenv("RERANK_API_KEY"),
-            base_url=os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1")
+        return dict(
+            workspace=workspace,
+            kv_storage="PGKVStorage",
+            vector_storage="PGVectorStorage",
+            graph_storage="NetworkXStorage",
+            doc_status_storage="PGDocStatusStorage",
         )
-        async def _rerank(query: str, documents: list[str], **kwargs):
-            """OpenAI-compatible rerank wrapper (SiliconFlow / Jina / Cohere via compatible API)"""
-            model = kwargs.get("model", os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"))
-            try:
-                resp = await _rr_client.post("/rerank", json={
-                    "model": model,
-                    "query": query,
-                    "documents": documents,
-                    "top_n": kwargs.get("top_n", len(documents)),
-                    "return_documents": False
-                })
-                data = resp.json()
-                return data.get("results", [])
-            except Exception as e:
-                print(f"[WARN] Rerank failed: {e}", flush=True)
-                return None
-        kw["rerank_model_func"] = _rerank
-        print(f"[INFO] Reranker enabled")
+    return {}
+
+
+def _create_rerank_func():
+    """构造 Reranker 适配器。未启用或凭据缺失时返回 None。"""
+    if os.getenv("RERANK_ENABLED", "false") != "true" or not os.getenv("RERANK_API_KEY"):
+        return None
+    from openai import AsyncOpenAI
+    _rr_client = AsyncOpenAI(
+        api_key=os.getenv("RERANK_API_KEY"),
+        base_url=os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1"))
+
+    async def _rerank(query: str, documents: list[str], **kwargs):
+        """OpenAI-compatible rerank wrapper (SiliconFlow / Jina / Cohere via compatible API)"""
+        model = kwargs.get("model", os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"))
+        try:
+            resp = await _rr_client.post("/rerank", json={
+                "model": model,
+                "query": query,
+                "documents": documents,
+                "top_n": kwargs.get("top_n", len(documents)),
+                "return_documents": False
+            })
+            data = resp.json()
+            return data.get("results", [])
+        except Exception as e:
+            print(f"[WARN] Rerank failed: {e}", flush=True)
+            return None
+    print("[INFO] Reranker enabled")
+    return _rerank
+
+
+# ═══════════════════════════════════════
+#  LightRAG 构造（编排器，不初始化存储）
+# ═══════════════════════════════════════
+
+def _make_rag(work_dir: str, workspace: str = "default"):
+    """构造 LightRAG 实例。适配器、存储后端、实体类型均由工厂函数组装。"""
+    from lightrag import LightRAG
+    import json
+
+    # 实体类型解析
+    et_raw = os.getenv("ENTITY_TYPES", "")
+    entity_types = None
+    if et_raw:
+        try:
+            entity_types = json.loads(et_raw)
+        except json.JSONDecodeError:
+            entity_types = [t.strip() for t in et_raw.split(",") if t.strip()]
+
+    addon = {"language": SUMMARY_LANGUAGE}
+    if entity_types:
+        addon["entity_types"] = entity_types
+
+    kw = dict(
+        working_dir=work_dir,
+        llm_model_func=_create_llm_func(),
+        embedding_func=_create_embed_func(),
+        llm_model_name=os.getenv("LLM_MODEL", "deepseek-v4-flash"),
+        chunk_token_size=CHUNK_SIZE,
+        chunk_overlap_token_size=CHUNK_OVERLAP_SIZE,
+        entity_extract_max_gleaning=MAX_GLEANING,
+        addon_params=addon,
+    )
+
+    # 存储后端
+    kw.update(_resolve_storage_kwargs(workspace))
+
+    # Reranker
+    rerank = _create_rerank_func()
+    if rerank:
+        kw["rerank_model_func"] = rerank
 
     return LightRAG(**kw)
 

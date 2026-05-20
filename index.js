@@ -28,6 +28,24 @@ function healthCheck(port, timeout = 2000) {
 }
 
 // ═══════════════════════════════════════
+//  配置 → 环境变量映射（新增配置项只需在此登记）
+// ═══════════════════════════════════════
+
+const ENV_MAP = [
+  ["lightragPort",       "LIGHTRAG_PORT",       v => String(v || 9621)],
+  ["workingDir",         "LIGHTRAG_WORKING_DIR", v => v],
+  ["summaryLanguage",    "SUMMARY_LANGUAGE",     v => v || "Chinese"],
+  ["maxGleaning",        "MAX_GLEANING",         v => String(v ?? 0)],
+  ["chunkSize",          "CHUNK_SIZE",           v => String(v || 1200)],
+  ["chunkOverlapSize",   "CHUNK_OVERLAP_SIZE",   v => String(v || 100)],
+  ["entityTypes",        "ENTITY_TYPES",         v => JSON.stringify(v || [])],
+  ["defaultQueryMode",   "DEFAULT_QUERY_MODE",   v => v || "mix"],
+  ["embedModel",         "EMBED_MODEL",          v => v || "Qwen/Qwen3-Embedding-8B"],
+  ["embedDim",           "EMBED_DIM",            v => String(v || 4096)],
+  ["rerankEnabled",      "RERANK_ENABLED",       v => v ? "true" : "false"],
+];
+
+// ═══════════════════════════════════════
 //  Plugin
 // ═══════════════════════════════════════
 
@@ -84,9 +102,16 @@ export default class Plugin {
     try { embedCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.embeddingProviderId })) || {}; }
     catch (e) { ctx.log.warn(`Embedding provider "${cfg.embeddingProviderId}" not found: ${e.message}`); }
 
-    if (cfg.rerankEnabled && cfg.rerankProviderId) {
-      try { rerankCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.rerankProviderId })) || {}; }
-      catch (e) { ctx.log.warn(`Rerank provider "${cfg.rerankProviderId}" not found: ${e.message}`); }
+    if (cfg.rerankEnabled) {
+      if (!cfg.rerankProviderId) {
+        ctx.log.warn("Rerank 已启用但 rerankProviderId 未配置，重排功能不生效。请在插件设置中配置 Rerank Provider ID。");
+      } else {
+        try { rerankCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.rerankProviderId })) || {}; }
+        catch (e) { ctx.log.warn(`Rerank provider "${cfg.rerankProviderId}" not found: ${e.message}`); }
+        if (!rerankCreds.apiKey) {
+          ctx.log.warn(`Rerank provider "${cfg.rerankProviderId}" 凭据缺失，重排功能不生效。请检查 Provider 配置。`);
+        }
+      }
     }
 
     if (!llmCreds.apiKey) { ctx.log.error(`LLM provider "${cfg.llmProviderId}" is not configured.`); return null; }
@@ -97,26 +122,20 @@ export default class Plugin {
   // ── 构建环境变量 ──
   async _buildEnv(cfg, creds) {
     const ctx = this.ctx;
-    const env = {
-      ...process.env,
-      LIGHTRAG_PORT: String(cfg.port),
-      LIGHTRAG_WORKING_DIR: cfg.workingDir,
-      LLM_API_KEY: creds.llmCreds.apiKey,
-      LLM_BASE_URL: creds.llmCreds.baseUrl || "",
-      LLM_API_SPEC: creds.llmCreds.api || "openai-completions",
-      EMBED_API_KEY: creds.embedCreds.apiKey,
-      EMBED_BASE_URL: creds.embedCreds.baseUrl || "",
-      EMBED_API_SPEC: creds.embedCreds.api || "openai-completions",
-      SUMMARY_LANGUAGE: cfg.summaryLanguage,
-      MAX_GLEANING: String(cfg.maxGleaning),
-      CHUNK_SIZE: String(cfg.chunkSize),
-      CHUNK_OVERLAP_SIZE: String(cfg.chunkOverlapSize),
-      ENTITY_TYPES: JSON.stringify(cfg.entityTypes),
-      DEFAULT_QUERY_MODE: cfg.defaultQueryMode,
-      EMBED_MODEL: cfg.embedModel,
-      EMBED_DIM: String(cfg.embedDim),
-      RERANK_ENABLED: cfg.rerankEnabled ? "true" : "false",
-    };
+    const env = { ...process.env };
+
+    // cfg → env 声明式映射
+    for (const [cfgKey, envKey, xform] of ENV_MAP) {
+      env[envKey] = xform(cfg[cfgKey]);
+    }
+
+    // 凭据注入
+    env.LLM_API_KEY = creds.llmCreds.apiKey;
+    env.LLM_BASE_URL = creds.llmCreds.baseUrl || "";
+    env.LLM_API_SPEC = creds.llmCreds.api || "openai-completions";
+    env.EMBED_API_KEY = creds.embedCreds.apiKey;
+    env.EMBED_BASE_URL = creds.embedCreds.baseUrl || "";
+    env.EMBED_API_SPEC = creds.embedCreds.api || "openai-completions";
 
     if (cfg.rerankEnabled && creds.rerankCreds?.apiKey) {
       env.RERANK_API_KEY = creds.rerankCreds.apiKey;
