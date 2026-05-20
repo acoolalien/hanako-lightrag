@@ -16,7 +16,8 @@
 3. **配置 Provider**：确保 Hanako 中已配好 LLM 和 Embedding Provider
 4. **填入 Provider ID**：在插件设置中填入 `llmProviderId` 和 `embeddingProviderId`
 5. **（可选）启用 Reranker**：配置 `rerankProviderId` 并开启 `rerankEnabled`
-6. **开始使用**：Agent 自动获得 `lightrag_insert` 等 6 个工具
+6. **AI 辅助索引设置**：首次索引文档前，直接告诉 Agent 你要索引什么文件，Agent 会根据文档类型（设定集/小说/技术文档等）推荐查询模式和分块策略，并建议是否需要创建独立知识库
+7. **开始使用**：Agent 自动获得 `lightrag_insert` 等 6 个工具
 
 > 首次索引前建议先创建独立知识库（通过 `lightrag_ws_create` 或图谱页下拉菜单），避免与默认知识库混用。
 
