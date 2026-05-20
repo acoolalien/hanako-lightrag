@@ -81,13 +81,12 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
     }
     var els=[];
 
-    // 计算节点度数 + 分位数分级
+    // 计算节点度数 + 对数二次映射到尺寸（拉开顶级枢纽差距）
     var degMap={}; data.nodes.forEach(function(n){degMap[n.id]=0});
     data.edges.forEach(function(e){if(degMap.hasOwnProperty(e.source))degMap[e.source]++;if(degMap.hasOwnProperty(e.target))degMap[e.target]++});
-    var degs=data.nodes.map(function(n){return degMap[n.id]||0}).sort(function(a,b){return a-b});
-    var N=degs.length;
-    var p40=degs[Math.floor(N*0.40)]||0,p70=degs[Math.floor(N*0.70)]||0,p85=degs[Math.floor(N*0.85)]||0,p95=degs[Math.floor(N*0.95)]||0;
-    function degToSize(d){if(d<=0)return 6;if(d>=p95)return 24;if(d>=p85)return 18;if(d>=p70)return 14;if(d>=p40)return 10;return 7}
+    var maxDeg=1; data.nodes.forEach(function(n){var d=degMap[n.id]||0;if(d>maxDeg)maxDeg=d});
+    var logMax=Math.log(maxDeg+1);
+    function degToSize(d){if(d<=0)return 6;var r=Math.log(d+1)/logMax;return Math.round(6+24*r*r)}
 
     data.nodes.forEach(function(n){els.push({data:{id:n.id,label:n.id,color:D.COLORS[n.type]||D.COLORS.other,size:degToSize(degMap[n.id]||0)}})});
     data.edges.forEach(function(e){els.push({data:{id:e.id,source:e.source,target:e.target,label:e.label||''}})});
