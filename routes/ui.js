@@ -81,12 +81,11 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
     }
     var els=[];
 
-    // 计算节点度数 + 对数二次映射到尺寸（拉开顶级枢纽差距）
+    // 计算节点度数 + 线性映射到 6~50px
     var degMap={}; data.nodes.forEach(function(n){degMap[n.id]=0});
     data.edges.forEach(function(e){if(degMap.hasOwnProperty(e.source))degMap[e.source]++;if(degMap.hasOwnProperty(e.target))degMap[e.target]++});
     var maxDeg=1; data.nodes.forEach(function(n){var d=degMap[n.id]||0;if(d>maxDeg)maxDeg=d});
-    var logMax=Math.log(maxDeg+1);
-    function degToSize(d){if(d<=0)return 6;var r=Math.log(d+1)/logMax;return Math.round(6+24*r*r)}
+    function degToSize(d){return Math.round(6+44*d/maxDeg)}
 
     data.nodes.forEach(function(n){els.push({data:{id:n.id,label:n.id,color:D.COLORS[n.type]||D.COLORS.other,size:degToSize(degMap[n.id]||0)}})});
     data.edges.forEach(function(e){els.push({data:{id:e.id,source:e.source,target:e.target,label:e.label||''}})});
