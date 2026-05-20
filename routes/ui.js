@@ -100,7 +100,7 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
         {selector:'edge.show:selected',style:{'line-color':'#f78166','target-arrow-color':'#f78166',width:2.5}},
         {selector:'edge.show.labeled',style:{label:'data(label)'}}
       ],
-      layout:{name:'cose',idealEdgeLength:80,nodeOverlap:12,padding:40,nodeRepulsion:function(){return 10000},gravity:0.2,numIter:5000,animate:'end',animationDuration:3000,animationEasing:'ease-in-out',randomize:false,fit:true},
+      layout:{name:'cose',idealEdgeLength:35,nodeOverlap:16,padding:30,nodeRepulsion:function(){return 4000},gravity:0.3,numIter:2000,animate:'end',animationDuration:2000,animationEasing:'ease-in-out',randomize:false,fit:true},
       wheelSensitivity:0.3
     });
     window.__cy__=cy;
@@ -122,7 +122,7 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
 
   window.relayout=function(){
     if(!window.__cy__)return;hideEdges();
-    window.__cy__.layout({name:'cose',idealEdgeLength:80,nodeOverlap:12,padding:40,nodeRepulsion:function(){return 10000},gravity:0.2,numIter:5000,animate:'end',animationDuration:3000,animationEasing:'ease-in-out',randomize:false,fit:true}).run();
+    window.__cy__.layout({name:'cose',idealEdgeLength:35,nodeOverlap:16,padding:30,nodeRepulsion:function(){return 4000},gravity:0.3,numIter:2000,animate:'end',animationDuration:2000,animationEasing:'ease-in-out',randomize:false,fit:true}).run();
   };
 
   window.switchWS=function(ws){
