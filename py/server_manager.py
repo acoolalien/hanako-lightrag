@@ -305,16 +305,37 @@ def _register_docs(app, IR):
 
     @app.get("/documents")
     async def list_documents(workspace: str = "default"):
-        rag = await get_rag(workspace)
-        from lightrag.base import DocStatus
-        all_docs = {}
-        for s in [DocStatus.PENDING, DocStatus.PROCESSING, DocStatus.PROCESSED, DocStatus.FAILED]:
-            try: all_docs.update(await rag.doc_status.get_docs_by_status(s))
-            except Exception: pass
-        docs = [{"id": did, "status": s.status, "file_path": getattr(s, "file_path", ""),
-                 "content_summary": getattr(s, "content_summary", ""),
-                 "content_length": getattr(s, "content_length", 0),
-                 "created_at": getattr(s, "created_at", "")} for did, s in all_docs.items()]
+        # 优先从 JSON 文件直接加载 doc_status（绕过 LightRAG 内存缓存的一致性问题）
+        import json
+        work_dir = _ws_dir(workspace)
+        doc_file = os.path.join(work_dir, "kv_store_doc_status.json")
+        docs = []
+        if os.path.isfile(doc_file):
+            try:
+                with open(doc_file, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                for did, s in raw.items():
+                    docs.append({
+                        "id": did,
+                        "status": s.get("status", "unknown"),
+                        "file_path": s.get("file_path", ""),
+                        "content_summary": s.get("content_summary", ""),
+                        "content_length": s.get("content_length", 0),
+                        "created_at": s.get("created_at", "")
+                    })
+            except Exception:
+                pass  # fallback to LightRAG API below
+        if not docs:
+            rag = await get_rag(workspace)
+            from lightrag.base import DocStatus
+            all_docs = {}
+            for s in [DocStatus.PENDING, DocStatus.PROCESSING, DocStatus.PROCESSED, DocStatus.FAILED]:
+                try: all_docs.update(await rag.doc_status.get_docs_by_status(s))
+                except Exception: pass
+            docs = [{"id": did, "status": s.status, "file_path": getattr(s, "file_path", ""),
+                     "content_summary": getattr(s, "content_summary", ""),
+                     "content_length": getattr(s, "content_length", 0),
+                     "created_at": getattr(s, "created_at", "")} for did, s in all_docs.items()]
         return {"documents": docs, "total": len(docs)}
 
     @app.delete("/documents/{doc_id}")
