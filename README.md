@@ -62,37 +62,14 @@
 | `maxGleaning` | `0` | 实体提取额外循环次数，0=跳过 |
 | `chunkSize` | `1200` | 分块大小（tokens） |
 | `chunkOverlapSize` | `100` | 分块重叠（tokens） |
-| `storageBackend` | `json` | 存储后端：`json` 或 `postgres` |
-| `pgHost` | `localhost` | PostgreSQL 主机（PG 后端时生效） |
-| `pgPort` | `5432` | PostgreSQL 端口 |
-| `pgDatabase` | `lightrag` | PostgreSQL 数据库名 |
-| `pgUser` | `postgres` | PostgreSQL 用户名 |
-| `pgPassword` | （空） | PostgreSQL 密码 |
+| `storageBackend` | `json` | 存储后端。默认 json 零依赖 |
 | `workspaces` | `{"default":"默认知识库"}` | 知识库列表 `{key: 显示名}` |
 
-> PostgreSQL 相关配置项（`pgHost`/`pgPort`/`pgDatabase`/`pgUser`/`pgPassword`）仅在 `storageBackend=postgres` 时生效。
+> PostgreSQL 存储后端规划中但未完整实现，相关配置项暂不列出。当前推荐使用默认 JSON 后端。
 
 ## 存储后端
 
-LightRAG 支持多种存储后端，当前默认使用 JSON 文件（零依赖，零配置）。
-
-### 存储效率对比（百万字项目预估）
-
-| 后端 | KV | 向量 | 图 | 存储大小 | 运行时 RAM | 安装负担 |
-|------|:--:|:--:|:--:|---------|-----------|---------|
-| **JSON（默认）** | ✅ | nano-vectordb | NetworkX | ~500 MB | 零额外 | 零 |
-| **PostgreSQL + pgvector** | ✅ | pgvector | NetworkX | ~50 MB | ~50 MB | PG 安装包 ~200MB |
-| Neo4j + Milvus | — | ✅ | ✅ | ~30 MB | ~1.5 GB | 两个服务 + Java |
-| OpenSearch | ✅ | ✅ | ✅ | ~80 MB | ~1.5-2 GB | Java 运行时 + 配置 |
-
-### 升级到 PostgreSQL + pgvector
-
-**安装**（Windows）：
-1. [下载 PostgreSQL](https://www.postgresql.org/download/windows/) 安装包
-2. 安装 pgvector 扩展：下载预编译 DLL 放到 `share/extension/` 和 `lib/`，执行 `CREATE EXTENSION vector;`
-3. 创建数据库：`CREATE DATABASE lightrag;`
-
-**配置**（在插件配置中将 `storageBackend` 改为 `postgres`，并填入 PG 连接信息）。切换后端需重新索引文档。
+当前默认使用 JSON 文件（零依赖，零配置）。PostgreSQL 后端规划中但未完整验证，暂不推荐生产使用。
 
 ## 架构
 
