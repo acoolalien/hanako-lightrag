@@ -232,6 +232,8 @@ def _create_app():
     _register_docs(app, IR)
     _register_graph(app)
     _register_workspaces(app)
+    _register_entities(app)
+    _register_export(app)
 
     return app
 
@@ -392,6 +394,79 @@ def _register_workspaces(app):
         if safe in _rags: del _rags[safe]
         import shutil; shutil.rmtree(d)
         return {"deleted": safe, "status": "ok"}
+
+def _register_entities(app):
+    """实体 / 关系操作"""
+    from pydantic import BaseModel
+
+    class EntityEdit(BaseModel):
+        entity_name: str
+        new_data: dict = {}
+
+    class RelationEdit(BaseModel):
+        source: str
+        target: str
+        new_data: dict = {}
+
+    class MergeRequest(BaseModel):
+        source: str
+        target: str
+
+    @app.delete("/entities/{entity_name}")
+    async def delete_entity(entity_name: str, workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            result = await rag.adelete_by_entity(entity_name)
+            return {"deleted": entity_name, "result": str(result)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.delete("/relations")
+    async def delete_relation(source: str, target: str, workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            result = await rag.adelete_by_relation(source, target)
+            return {"deleted": f"{source} -> {target}", "result": str(result)}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.put("/entities")
+    async def edit_entity(req: EntityEdit, workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            await rag.aedit_entity(req.entity_name, **req.new_data)
+            return {"edited": req.entity_name, "status": "ok"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.put("/relations")
+    async def edit_relation(req: RelationEdit, workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            await rag.aedit_relation(req.source, req.target, **req.new_data)
+            return {"edited": f"{req.source} -> {req.target}", "status": "ok"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    @app.post("/entities/merge")
+    async def merge_entities(req: MergeRequest, workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            await rag.amerge_entities(req.source, req.target)
+            return {"merged": f"{req.source} -> {req.target}", "status": "ok"}
+        except Exception as e:
+            return {"error": str(e)}
+
+def _register_export(app):
+    """导出知识库数据"""
+    @app.get("/export")
+    async def export_data(workspace: str = "default"):
+        rag = await get_rag(workspace)
+        try:
+            data = await rag.aexport_data()
+            return {"workspace": workspace, "data": data}
+        except Exception as e:
+            return {"error": str(e)}
 
 # ═══════════════════════════════════════
 #  入口

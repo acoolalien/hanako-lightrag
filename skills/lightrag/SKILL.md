@@ -11,9 +11,12 @@ description: >
 
 | 工具 | 用途 |
 |------|------|
-| `lightrag_query` | 查询知识库，6 种模式 + 跨库（workspace 逗号分隔） |
+| `lightrag_query` | 查询知识库，6 种模式 + 跨库 |
 | `lightrag_insert` | 索引文档（批量，自动去重） |
-| `lightrag_status` | 查看已索引文档和服务健康状态 |
+| `lightrag_doc_delete` | 删除单篇文档（需 `confirm: true`） |
+| `lightrag_status` | 查看已索引文档列表和服务健康 |
+| `lightrag_entity_delete` | 删除错误实体 |
+| `lightrag_entity_merge` | 合并重复实体 |
 | `lightrag_ws_list` | 列出所有知识库 |
 | `lightrag_ws_create` | 创建新知识库 |
 | `lightrag_ws_delete` | 删除知识库（需 `confirm: true`） |
@@ -75,3 +78,16 @@ description: >
 1. 查询默认 `topK: 5`，最大 50
 2. 返回结果超过 8000 字符会被截断
 3. 查询噪声大时先用 `only_need_context: true` 看原文再决定
+
+## 知识图谱维护
+
+索引完成后，LightRAG 自动提取实体和关系。如果出现提取错误，可手动修正：
+
+| 场景 | 工具 | 示例 |
+|------|------|------|
+| 提取了错误实体 | `lightrag_entity_delete` | 噪音实体、拼写错误实体 |
+| 同一概念多个实体名 | `lightrag_entity_merge` | "孙悟空" 和 "齐天大圣" → 合并 |
+| 索引了错误文档 | `lightrag_doc_delete` | 传错文件、内容过时 |
+| 整个项目不再需要 | `lightrag_ws_delete` | 清理测试知识库 |
+
+> 实体/关系删除不可恢复。批量操作前先用 `lightrag_status` 确认目标。
