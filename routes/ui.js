@@ -47,7 +47,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg
   <span class="s">文档 <b id="stat-docs">$DOCS$</b></span>
   <span class="s">实体 <b id="stat-nodes">$NODES$</b></span>
   <span class="s">关系 <b id="stat-edges">$EDGES$</b></span>
-  $DOC_SELECT$
+  <span id="doc-select">$DOC_SELECT$</span>
   <select id="ws-select" onchange="switchWS(this.value)">$WS_OPTIONS$</select>
   <button onclick="relayout()">重新布局</button>
   <button onclick="if(window.__cy__)window.__cy__.fit(undefined,40)">重置视图</button>
@@ -119,21 +119,38 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
   };
 
   window.switchWS=function(ws){
-    var u=D.base+'/graph?workspace='+encodeURIComponent(ws)+'&limit=200';
-    fetch(u).then(function(r){return r.json()}).then(function(raw){
-      raw=raw||{nodes:[],edges:[]};
+    D.workspace=ws;
+    // 并发获取图谱和文档统计
+    var gUrl=D.base+'/graph?workspace='+encodeURIComponent(ws)+'&limit=200';
+    var dUrl=D.base+'/documents?workspace='+encodeURIComponent(ws);
+    Promise.all([fetch(gUrl).then(function(r){return r.json()}),fetch(dUrl).then(function(r){return r.json()})]).then(function(results){
+      var raw=results[0]||{nodes:[],edges:[]};
+      var docs=results[1]||{documents:[],total:0};
+
+      // 更新文档统计
+      var docList=docs.documents||[];
+      var docCount=docs.total||0;
+      var processed=docList.filter(function(d){return d.status==='processed'}).length;
+      document.getElementById('stat-docs').textContent=docCount;
+      var dsEl=document.getElementById('doc-select');
+      if(dsEl){
+        dsEl.textContent='📄 '+(docCount>0?processed+'/'+docCount+' 已索引':'暂无文档');
+        var fpaths=docList.filter(function(d){return d.file_path}).map(function(d){return d.file_path.replace(/^.*[\\/]/,'')}).join(', ');
+        dsEl.title=fpaths||'';
+      }
+
       var SKIP2={PERSON:1,ORGANIZATION:1,LOCATION:1,EVENT:1,CONCEPT:1,ITEM:1,ABILITY:1,RELATIONSHIP:1,TIME_PERIOD:1,LAW_RULE:1,Other:1};
       var nodes=raw.nodes.filter(function(n){return !SKIP2[n.id]});
       var nids={};nodes.forEach(function(n){nids[n.id]=1});
       var edges=raw.edges.filter(function(e){return nids[e.source]&&nids[e.target]});
-      D.workspace=ws;
       renderGraph({nodes:nodes.map(function(n){return{id:n.id,type:n.entity_type||'other'}}),edges:edges.map(function(e){return{id:e.id,source:e.source,target:e.target,label:e.label||''}})});
+
+      // 更新图例
+      var tc={};nodes.forEach(function(n){var t=n.entity_type||'other';tc[t]=(tc[t]||0)+1});
+      var items=Object.entries(tc).sort(function(a,b){return b[1]-a[1]}).slice(0,10);
+      var legendEl=document.querySelector('.legend');
+      if(legendEl)legendEl.innerHTML=items.map(function(e){var t=e[0],n=e[1],cn=(D.TYPES&&D.TYPES[t])||t;return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:'+(D.COLORS[t.toLowerCase()]||D.COLORS.other)+';display:inline-block"></span>'+cn+'</span>'}).join('');
     }).catch(function(e){console.error('switchWS',e)});
-    // 更新图例
-    var tc={};nodes.forEach(function(n){var t=n.entity_type||'other';tc[t]=(tc[t]||0)+1});
-    var items=Object.entries(tc).sort(function(a,b){return b[1]-a[1]}).slice(0,10);
-    var legendEl=document.querySelector('.legend');
-    if(legendEl)legendEl.innerHTML=items.map(function(e){var t=e[0],n=e[1],cn=(D.TYPES&&D.TYPES[t])||t;return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:'+(D.COLORS[t.toLowerCase()]||D.COLORS.other)+';display:inline-block"></span>'+cn+'</span>'}).join('');
   };
 
   renderGraph(D.graph);
