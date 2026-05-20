@@ -15,8 +15,8 @@ function fetchJSON(url) {
   });
 }
 
-const TYPE_CN = { person:'人物',creature:'生物',organization:'组织',location:'地点',event:'事件',concept:'概念',method:'方法',content:'内容',data:'数据',artifact:'物品',naturalobject:'自然',other:'其他',unknown:'未知',PERSON:'人物',ORGANIZATION:'组织',LOCATION:'地点',EVENT:'事件',CONCEPT:'概念',ITEM:'物品',ABILITY:'能力',RELATIONSHIP:'关系',TIME_PERIOD:'时期',LAW_RULE:'规则',UNKNOWN:'未知' };
-const COLORS = { person:'#4169E1',creature:'#bd7ebe',organization:'#00cc00',location:'#cf6d17',event:'#00bfa0',concept:'#e3493b',method:'#b71c1c',content:'#0f558a',data:'#0000ff',artifact:'#4421af',naturalobject:'#b2e061',other:'#f4d371',unknown:'#b0b0b0' };
+const TYPE_CN = { person:'人物',creature:'生物',organization:'组织',location:'地点',event:'事件',concept:'概念',method:'方法',content:'内容',data:'数据',artifact:'物品',item:'物品',naturalobject:'自然',other:'其他',unknown:'未知',position:'职位',time_period:'时期',ability:'能力',relationship:'关系',law_rule:'规则',PERSON:'人物',ORGANIZATION:'组织',LOCATION:'地点',EVENT:'事件',CONCEPT:'概念',ITEM:'物品',ABILITY:'能力',RELATIONSHIP:'关系',TIME_PERIOD:'时期',LAW_RULE:'规则',UNKNOWN:'未知' };
+const COLORS = { person:'#4169E1',creature:'#bd7ebe',organization:'#00cc00',location:'#cf6d17',event:'#00bfa0',concept:'#e3493b',method:'#b71c1c',content:'#0f558a',data:'#0000ff',artifact:'#4421af',item:'#4db6ac',naturalobject:'#b2e061',other:'#f4d371',unknown:'#b0b0b0',position:'#7e57c2',time_period:'#ff7043',ability:'#26a69a',relationship:'#ec407a',law_rule:'#78909c' };
 const SKIP = new Set(["PERSON","ORGANIZATION","LOCATION","EVENT","CONCEPT","ITEM","ABILITY","RELATIONSHIP","TIME_PERIOD","LAW_RULE","Other"]);
 
 const HTML = `<!doctype html>
@@ -149,7 +149,7 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
       var tc={};nodes.forEach(function(n){var t=n.entity_type||'other';tc[t]=(tc[t]||0)+1});
       var items=Object.entries(tc).sort(function(a,b){return b[1]-a[1]}).slice(0,10);
       var legendEl=document.querySelector('.legend');
-      if(legendEl)legendEl.innerHTML=items.map(function(e){var t=e[0],n=e[1],cn=(D.TYPES&&D.TYPES[t])||t;return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:'+(D.COLORS[t.toLowerCase()]||D.COLORS.other)+';display:inline-block"></span>'+cn+'</span>'}).join('');
+      if(legendEl)legendEl.innerHTML=items.map(function(e){var t=e[0],n=e[1],cn=(D.TYPES&&D.TYPES[t])||t.replace(/_/g,' ').replace(/^\w/,function(c){return c.toUpperCase()});return '<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:'+(D.COLORS[t.toLowerCase()]||D.COLORS.other)+';display:inline-block"></span>'+cn+'</span>'}).join('');
     }).catch(function(e){console.error('switchWS',e)});
   };
 
@@ -202,7 +202,7 @@ export default function registerRoutes(app, ctx) {
       .replace("$WS_KEY$", esc(ws))
       .replace("$BASE$", base)
       .replace("$LEGEND$", Object.entries(typeCount).sort((a,b)=>b[1]-a[1]).slice(0,10)
-        .map(([t,n]) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:${COLORS[t.toLowerCase()]||COLORS.other};display:inline-block"></span>${TYPE_CN[t]||t}</span>`).join(""))
+        .map(([t,n]) => `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="width:10px;height:10px;border-radius:50%;background:${COLORS[t.toLowerCase()]||COLORS.other};display:inline-block"></span>${TYPE_CN[t] || t.replace(/_/g,' ').replace(/^./,c=>c.toUpperCase())}</span>`).join(""))
       .replace("$GRAPH$", JSON.stringify({
         nodes: nodes.map(n => ({ id:n.id, type:n.entity_type||"other" })),
         edges: edges.map(e => ({ id:e.id, source:e.source, target:e.target, label:e.label||"" }))
