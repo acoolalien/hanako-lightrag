@@ -1,47 +1,110 @@
 #!/usr/bin/env python3
-"""hanako-lightrag/py/server_manager.py — LightRAG FastAPI 包装器。"""
+"""hanako-lightrag/py/server_manager.py — LightRAG FastAPI 包装器。
 
-import os, sys, asyncio, re
+配置来源（无硬编码回退）：
+  - resolved_config.json（JS 侧生成的运行时配置文件）
+  - 环境变量 LLM_API_KEY / EMBED_API_KEY / RERANK_API_KEY（仅 API 密钥）
+
+"""
+
+import os, sys, json, asyncio, re, argparse
+from typing import Optional
 from lightrag import QueryParam
 
-PORT = int(os.getenv("LIGHTRAG_PORT", "9621"))
-WORKING_DIR = os.getenv("LIGHTRAG_WORKING_DIR", "./lightrag_data")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.deepseek.com/v1")
-EMBED_API_KEY = os.getenv("EMBED_API_KEY", "")
-EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "https://api.siliconflow.cn/v1")
-SUMMARY_LANGUAGE = os.getenv("SUMMARY_LANGUAGE", "Chinese")
-MAX_GLEANING = int(os.getenv("MAX_GLEANING", "0"))
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
-CHUNK_OVERLAP_SIZE = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
+
+# ═══════════════════════════════════════
+#  配置类（唯一配置来源）
+# ═══════════════════════════════════════
+
+class Config:
+    """从 resolved_config.json + 3 个环境变量读取配置。无硬编码回退。"""
+
+    def __init__(self, path: str):
+        # ── 环境变量（仅 API 密钥） ──
+        self.llm_api_key = os.environ.get("LLM_API_KEY", "")
+        self.embed_api_key = os.environ.get("EMBED_API_KEY", "")
+        self.rerank_api_key = os.environ.get("RERANK_API_KEY", "")
+
+        if not self.llm_api_key:
+            self._fatal("LLM_API_KEY not set")
+        if not self.embed_api_key:
+            self._fatal("EMBED_API_KEY not set")
+
+        # ── 配置文件 ──
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception as e:
+            self._fatal(f"failed to load config: {e}")
+
+        def _g(*keys):
+            """递归取嵌套 key，找不到则 fatal。"""
+            val = d
+            for k in keys:
+                if not isinstance(val, dict) or k not in val:
+                    self._fatal(f"config missing: {' > '.join(keys)}")
+                val = val[k]
+            return val
+
+        self.port             = _g("port")
+        self.working_dir      = _g("working_dir")
+        self.llm_base_url     = _g("llm", "base_url")
+        self.llm_model        = _g("llm", "model")
+        self.embed_base_url   = _g("embedding", "base_url")
+        self.embed_model      = _g("embedding", "model")
+        self.embed_dim        = _g("embedding", "dim")
+        self.embed_max_tokens = _g("embedding", "max_tokens")
+        self.chunk_size       = _g("chunk", "size")
+        self.chunk_overlap    = _g("chunk", "overlap")
+        self.summary_language = _g("summary_language")
+        self.max_gleaning     = _g("max_gleaning")
+        self.entity_types     = _g("entity_types")
+        self.default_query_mode = _g("default_query_mode")
+        self.storage_backend  = _g("storage_backend")
+
+        # rerank（可选段）
+        rerank = d.get("rerank", {})
+        self.rerank_enabled  = rerank.get("enabled", False)
+        self.rerank_base_url = rerank.get("base_url", "")
+        self.rerank_model    = rerank.get("model", "")
+
+        # postgres（可选段）
+        self.postgres = d.get("postgres", {})
+
+    @staticmethod
+    def _fatal(msg):
+        print(f"[FATAL] {msg}", file=sys.stderr)
+        sys.exit(1)
+
 
 # ── RAG 实例缓存 ──
 _rags: dict[str, "LightRAG"] = {}
+
 
 # ═══════════════════════════════════════
 #  环境检查
 # ═══════════════════════════════════════
 
 def _check_env():
+    """检查 Python 版本和 lightrag 库是否存在。"""
     if sys.version_info < (3, 10):
         print(f"[FATAL] Python 3.10+ required, got {sys.version}", file=sys.stderr); sys.exit(1)
-    if not LLM_API_KEY: print("[FATAL] LLM_API_KEY not set", file=sys.stderr); sys.exit(1)
-    if not EMBED_API_KEY: print("[FATAL] EMBED_API_KEY not set", file=sys.stderr); sys.exit(1)
     try:
-        import lightrag
+        import lightrag as lr
     except ImportError:
         print("[FATAL] lightrag-hku not installed", file=sys.stderr); sys.exit(1)
     # 抑制 INFO 噪音
     import logging
     logging.getLogger("lightrag").setLevel(logging.WARNING)
     logging.getLogger("nano-vectordb").setLevel(logging.WARNING)
-    print(f"[OK] Python {sys.version.split()[0]}, lightrag-hku {lightrag.__version__}")
+    print(f"[OK] Python {sys.version.split()[0]}, lightrag-hku {lr.__version__}")
+
 
 # ═══════════════════════════════════════
 #  LightRAG 适配器工厂
 # ═══════════════════════════════════════
 
-def _create_llm_func():
+def _create_llm_func(cfg: Config):
     """构造 LLM 调用适配器。"""
     from lightrag.llm.openai import openai_complete_if_cache
 
@@ -49,17 +112,19 @@ def _create_llm_func():
         if kw.pop("keyword_extraction", False):
             kw["response_format"] = {"type": "json_object"}
         return await openai_complete_if_cache(
-            model=os.getenv("LLM_MODEL", "deepseek-v4-flash"),
+            model=cfg.llm_model,
             prompt=prompt, system_prompt=system_prompt,
             history_messages=history_messages,
-            base_url=LLM_BASE_URL, api_key=LLM_API_KEY, **kw)
+            base_url=cfg.llm_base_url, api_key=cfg.llm_api_key, **kw)
     return _llm
 
 
 _embed_client = None
 
-def _create_embed_func():
-    """构造 Embedding 适配器。客户端实例缓存复用。"""
+def _create_embed_func(cfg: Config):
+    """构造 Embedding 适配器。客户端实例缓存复用。
+    自动检测多模态 endpoints（model 名以 ep- 开头）并使用 /embeddings/multimodal 接口。
+    """
     import numpy as np
     from openai import AsyncOpenAI
     from lightrag.utils import wrap_embedding_func_with_attrs
@@ -68,26 +133,51 @@ def _create_embed_func():
     def _get_ec():
         global _embed_client
         if _embed_client is None:
-            _embed_client = AsyncOpenAI(api_key=EMBED_API_KEY, base_url=EMBED_BASE_URL)
+            _embed_client = AsyncOpenAI(api_key=cfg.embed_api_key, base_url=cfg.embed_base_url)
         return _embed_client
 
+    _is_multimodal = cfg.embed_model.startswith("ep-")
+
     @wrap_embedding_func_with_attrs(
-        embedding_dim=int(os.getenv("EMBED_DIM", "4096")),
-        max_token_size=int(os.getenv("EMBED_MAX_TOKENS", "8192")),
-        model_name=os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-8B"))
+        embedding_dim=cfg.embed_dim,
+        max_token_size=cfg.embed_max_tokens,
+        model_name=cfg.embed_model)
     async def _embed(texts: list[str]):
         import base64 as b64
-        resp = await _get_ec().embeddings.create(
-            model=os.getenv("EMBED_MODEL", "Qwen/Qwen3-Embedding-8B"),
-            input=texts, encoding_format="base64")
-        return np.array([np.frombuffer(b64.b64decode(d.embedding), dtype=np.float32) for d in resp.data])
+        import httpx
+        if _is_multimodal:
+            headers = {
+                "Authorization": "Bearer " + cfg.embed_api_key,
+                "Content-Type": "application/json",
+            }
+            body = {
+                "model": cfg.embed_model,
+                "input": [{"type": "text", "text": t} for t in texts],
+                "encoding_format": "float",
+            }
+            url = cfg.embed_base_url.rstrip("/") + "/embeddings/multimodal"
+            async with httpx.AsyncClient() as client:
+                r = await client.post(url, json=body, headers=headers, timeout=60)
+                r.raise_for_status()
+                data = r.json()
+            emb = data["data"]
+            if isinstance(emb, dict):
+                emb = emb["embedding"]
+            if isinstance(emb[0], list):
+                return np.array(emb, dtype=np.float32)
+            return np.array(emb, dtype=np.float32).reshape(1, -1)
+        else:
+            resp = await _get_ec().embeddings.create(
+                model=cfg.embed_model,
+                input=texts, encoding_format="base64")
+            return np.array([np.frombuffer(b64.b64decode(d.embedding), dtype=np.float32) for d in resp.data])
     return _embed
 
 
-def _resolve_storage_kwargs(workspace: str) -> dict:
-    """根据 STORAGE_BACKEND 返回存储相关的 kw 字典。"""
-    backend = os.getenv("STORAGE_BACKEND", "json")
-    if backend == "postgres":
+def _resolve_storage_kwargs(cfg: Config, workspace: str) -> dict:
+    """根据 storage_backend 返回存储相关的 kw 字典。"""
+    if cfg.storage_backend == "postgres":
+        pg = cfg.postgres
         print(f"[INFO] Using PostgreSQL backend (workspace='{workspace}')")
         return dict(
             workspace=workspace,
@@ -99,18 +189,15 @@ def _resolve_storage_kwargs(workspace: str) -> dict:
     return {}
 
 
-def _create_rerank_func():
+def _create_rerank_func(cfg: Config):
     """构造 Reranker 适配器。未启用或凭据缺失时返回 None。"""
-    if os.getenv("RERANK_ENABLED", "false") != "true" or not os.getenv("RERANK_API_KEY"):
+    if not cfg.rerank_enabled or not cfg.rerank_api_key:
         return None
     from openai import AsyncOpenAI
-    _rr_client = AsyncOpenAI(
-        api_key=os.getenv("RERANK_API_KEY"),
-        base_url=os.getenv("RERANK_BASE_URL", "https://api.siliconflow.cn/v1"))
+    _rr_client = AsyncOpenAI(api_key=cfg.rerank_api_key, base_url=cfg.rerank_base_url)
 
     async def _rerank(query: str, documents: list[str], **kwargs):
-        """OpenAI-compatible rerank wrapper (SiliconFlow / Jina / Cohere via compatible API)"""
-        model = kwargs.get("model", os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"))
+        model = kwargs.get("model", cfg.rerank_model)
         try:
             resp = await _rr_client.post("/rerank", json={
                 "model": model,
@@ -132,82 +219,76 @@ def _create_rerank_func():
 #  LightRAG 构造（编排器，不初始化存储）
 # ═══════════════════════════════════════
 
-def _make_rag(work_dir: str, workspace: str = "default"):
-    """构造 LightRAG 实例。适配器、存储后端、实体类型均由工厂函数组装。"""
+def _make_rag(cfg: Config, work_dir: str, workspace: str = "default"):
+    """构造 LightRAG 实例。适配器、存储后端、实体类型均由 Config 驱动。"""
     from lightrag import LightRAG
-    import json
 
-    # 实体类型解析
-    et_raw = os.getenv("ENTITY_TYPES", "")
-    entity_types = None
-    if et_raw:
-        try:
-            entity_types = json.loads(et_raw)
-        except json.JSONDecodeError:
-            entity_types = [t.strip() for t in et_raw.split(",") if t.strip()]
-
-    addon = {"language": SUMMARY_LANGUAGE}
-    if entity_types:
-        addon["entity_types"] = entity_types
+    addon = {"language": cfg.summary_language}
+    if cfg.entity_types:
+        addon["entity_types"] = cfg.entity_types
 
     kw = dict(
         working_dir=work_dir,
-        llm_model_func=_create_llm_func(),
-        embedding_func=_create_embed_func(),
-        llm_model_name=os.getenv("LLM_MODEL", "deepseek-v4-flash"),
-        chunk_token_size=CHUNK_SIZE,
-        chunk_overlap_token_size=CHUNK_OVERLAP_SIZE,
-        entity_extract_max_gleaning=MAX_GLEANING,
+        llm_model_func=_create_llm_func(cfg),
+        embedding_func=_create_embed_func(cfg),
+        llm_model_name=cfg.llm_model,
+        chunk_token_size=cfg.chunk_size,
+        chunk_overlap_token_size=cfg.chunk_overlap,
+        entity_extract_max_gleaning=cfg.max_gleaning,
         addon_params=addon,
     )
 
     # 存储后端
-    kw.update(_resolve_storage_kwargs(workspace))
+    kw.update(_resolve_storage_kwargs(cfg, workspace))
 
     # Reranker
-    rerank = _create_rerank_func()
+    rerank = _create_rerank_func(cfg)
     if rerank:
         kw["rerank_model_func"] = rerank
 
     return LightRAG(**kw)
 
+
 # ═══════════════════════════════════════
 #  workspace 管理
 # ═══════════════════════════════════════
 
-def _ws_dir(workspace: str) -> str:
-    """workspace → 存储目录。PG 后端共享 WORKING_DIR 但用 workspace 参数隔离。"""
-    if workspace == "default": return WORKING_DIR
-    return os.path.join(WORKING_DIR, re.sub(r'[<>:"/\\|?*]', '_', workspace))
+def _ws_dir(cfg: Config, workspace: str) -> str:
+    """workspace → 存储目录。PG 后端共享 working_dir 但用 workspace 参数隔离。"""
+    if workspace == "default":
+        return cfg.working_dir
+    return os.path.join(cfg.working_dir, re.sub(r'[<>:"/\\|?*]', '_', workspace))
 
-async def get_rag(workspace: str = "default"):
+
+async def get_rag(cfg: Config, workspace: str = "default"):
     if workspace not in _rags:
-        d = _ws_dir(workspace)
-        rag = _make_rag(d, workspace=workspace)
+        d = _ws_dir(cfg, workspace)
+        rag = _make_rag(cfg, d, workspace=workspace)
         await rag.initialize_storages()
         _rags[workspace] = rag
         print(f"[OK] workspace '{workspace}' ({d})")
     return _rags[workspace]
 
-def get_rag_sync(workspace: str = "default"):
+
+def get_rag_sync(cfg: Config, workspace: str = "default"):
     """仅 main() 使用，不在事件循环内。"""
     if workspace not in _rags:
-        d = _ws_dir(workspace)
-        rag = _make_rag(d, workspace=workspace)
+        d = _ws_dir(cfg, workspace)
+        rag = _make_rag(cfg, d, workspace=workspace)
         asyncio.run(rag.initialize_storages())
         _rags[workspace] = rag
         print(f"[OK] workspace '{workspace}' ({d})")
     return _rags[workspace]
 
+
 # ═══════════════════════════════════════
 #  FastAPI 应用
 # ═══════════════════════════════════════
 
-def _create_app():
+def _create_app(cfg: Config):
     from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel, Field
-    from typing import Optional
 
     app = FastAPI(title="Hanako LightRAG", version="0.1.0")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -215,7 +296,7 @@ def _create_app():
     # ── Models ──
     class QR(BaseModel):
         query: str = Field(min_length=1)
-        mode: str = os.getenv("DEFAULT_QUERY_MODE", "mix")
+        mode: Optional[str] = None
         top_k: int = Field(default=5, ge=1, le=50)
         only_need_context: bool = False
         response_type: str = "Multiple Paragraphs"
@@ -227,20 +308,23 @@ def _create_app():
 
     # ── Route registrations ──
     _register_auth(app)
-    _register_health(app)
-    _register_query(app, QR)
-    _register_docs(app, IR)
-    _register_graph(app)
-    _register_workspaces(app)
-    _register_entities(app)
-    _register_export(app)
+    _register_health(app, cfg)
+    _register_query(app, QR, cfg)
+    _register_docs(app, IR, cfg)
+    _register_graph(app, cfg)
+    _register_workspaces(app, cfg)
+    _register_entities(app, cfg)
+    _register_export(app, cfg)
 
     return app
 
+
 async def _do_insert(rag, text, ids, fps, tid, ws):
-    try: await rag.ainsert(input=text, ids=ids, file_paths=fps, track_id=tid)
+    try:
+        await rag.ainsert(input=text, ids=ids, file_paths=fps, track_id=tid)
     except Exception as e:
         print(f"[ERROR] Insert failed ws={ws}: {e}", flush=True)
+
 
 # ═══════════════════════════════════════
 #  Route registrations
@@ -253,69 +337,88 @@ def _register_auth(app):
         return {"auth_configured": False, "access_token": secrets.token_urlsafe(32),
                 "token_type": "bearer", "auth_mode": "disabled",
                 "core_version": "lightrag-hku", "api_version": "0.1.0"}
+
     @app.post("/auth/login")
     async def auth_login():
         import secrets
         return {"access_token": secrets.token_urlsafe(32), "token_type": "bearer", "auth_mode": "disabled"}
 
-def _register_health(app):
+
+def _register_health(app, cfg: Config):
     @app.get("/health")
     async def health(workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         return {"status": "ok", "working_dir": rag.working_dir, "rag_ready": True, "workspace": workspace}
 
-def _register_query(app, QR):
+
+def _register_query(app, QR, cfg: Config):
+    """cfg 闭包捕获，_register_query 闭包捕获 QR 模型类。"""
+
     @app.post("/query")
     async def query(req: QR, workspace: str = "default"):
-        rag = await get_rag(workspace)
-        p = QueryParam(mode=req.mode, top_k=req.top_k, only_need_context=req.only_need_context,
+        rag = await get_rag(cfg, workspace)
+        mode = req.mode or cfg.default_query_mode
+        p = QueryParam(mode=mode, top_k=req.top_k,
+                       only_need_context=req.only_need_context,
                        response_type=req.response_type)
-        try: return {"result": await rag.aquery(req.query, p), "mode": req.mode}
-        except Exception as e: return {"error": str(e)}
+        try:
+            return {"result": await rag.aquery(req.query, p), "mode": mode}
+        except Exception as e:
+            return {"error": str(e)}
 
     @app.post("/query/context")
     async def query_context(req: QR, workspace: str = "default"):
-        rag = await get_rag(workspace)
-        p = QueryParam(mode=req.mode, top_k=req.top_k, only_need_context=True)
-        try: return {"result": await rag.aquery_data(req.query, p), "mode": req.mode}
-        except Exception as e: return {"error": str(e)}
+        rag = await get_rag(cfg, workspace)
+        mode = req.mode or cfg.default_query_mode
+        p = QueryParam(mode=mode, top_k=req.top_k, only_need_context=True)
+        try:
+            return {"result": await rag.aquery_data(req.query, p), "mode": mode}
+        except Exception as e:
+            return {"error": str(e)}
 
     @app.post("/query/cross")
     async def query_cross(req: QR, workspaces: str = "default"):
         ws_list = [w.strip() for w in workspaces.split(",") if w.strip()] or ["default"]
+        mode = req.mode or cfg.default_query_mode
+
         async def _one(ws):
             try:
-                rag = await get_rag(ws)
-                p = QueryParam(mode=req.mode, top_k=req.top_k, only_need_context=req.only_need_context,
+                rag = await get_rag(cfg, ws)
+                p = QueryParam(mode=mode, top_k=req.top_k,
+                               only_need_context=req.only_need_context,
                                response_type=req.response_type)
                 r = await (rag.aquery_data if req.only_need_context else rag.aquery)(req.query, p)
                 return {"workspace": ws, "result": r}
             except Exception as e:
                 return {"workspace": ws, "error": str(e)}
-        results = await asyncio.gather(*[_one(ws) for ws in ws_list])
-        return {"mode": req.mode, "workspaces": ws_list, "results": results}
 
-def _register_docs(app, IR):
+        results = await asyncio.gather(*[_one(ws) for ws in ws_list])
+        return {"mode": mode, "workspaces": ws_list, "results": results}
+
+
+def _register_docs(app, IR, cfg: Config):
     from lightrag.utils import generate_track_id
+
     @app.post("/documents/text")
     async def insert_text(req: IR, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         tid = generate_track_id("insert")
-        asyncio.create_task(_do_insert(rag, req.text, [req.doc_id] if req.doc_id else None,
-                                        [req.file_path] if req.file_path else None, tid, workspace))
+        asyncio.create_task(_do_insert(rag, req.text,
+                                       [req.doc_id] if req.doc_id else None,
+                                       [req.file_path] if req.file_path else None,
+                                       tid, workspace))
         return {"track_id": tid, "status": "queued"}
 
     @app.get("/documents")
     async def list_documents(workspace: str = "default"):
-        # 优先从 JSON 文件直接加载 doc_status（绕过 LightRAG 内存缓存的一致性问题）
-        import json
-        work_dir = _ws_dir(workspace)
+        import json as _json
+        work_dir = _ws_dir(cfg, workspace)
         doc_file = os.path.join(work_dir, "kv_store_doc_status.json")
         docs = []
         if os.path.isfile(doc_file):
             try:
                 with open(doc_file, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
+                    raw = _json.load(f)
                 for did, s in raw.items():
                     docs.append({
                         "id": did,
@@ -326,77 +429,92 @@ def _register_docs(app, IR):
                         "created_at": s.get("created_at", "")
                     })
             except Exception:
-                pass  # fallback to LightRAG API below
+                pass
         if not docs:
-            rag = await get_rag(workspace)
+            rag = await get_rag(cfg, workspace)
             from lightrag.base import DocStatus
             all_docs = {}
             for s in [DocStatus.PENDING, DocStatus.PROCESSING, DocStatus.PROCESSED, DocStatus.FAILED]:
-                try: all_docs.update(await rag.doc_status.get_docs_by_status(s))
-                except Exception: pass
-            docs = [{"id": did, "status": s.status, "file_path": getattr(s, "file_path", ""),
+                try:
+                    all_docs.update(await rag.doc_status.get_docs_by_status(s))
+                except Exception:
+                    pass
+            docs = [{"id": did, "status": s.status,
+                     "file_path": getattr(s, "file_path", ""),
                      "content_summary": getattr(s, "content_summary", ""),
                      "content_length": getattr(s, "content_length", 0),
-                     "created_at": getattr(s, "created_at", "")} for did, s in all_docs.items()]
+                     "created_at": getattr(s, "created_at", "")}
+                    for did, s in all_docs.items()]
         return {"documents": docs, "total": len(docs)}
 
     @app.delete("/documents/{doc_id}")
     async def delete_document(doc_id: str, workspace: str = "default"):
-        rag = await get_rag(workspace)
-        try: return {"result": str(await rag.adelete_by_doc_id(doc_id))}
-        except Exception as e: return {"error": str(e)}
+        rag = await get_rag(cfg, workspace)
+        try:
+            return {"result": str(await rag.adelete_by_doc_id(doc_id))}
+        except Exception as e:
+            return {"error": str(e)}
 
-def _register_graph(app):
+
+def _register_graph(app, cfg: Config):
     @app.get("/graph")
     async def get_graph(workspace: str = "default", limit: int = 200):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
-            kg = await rag.chunk_entity_relation_graph.get_knowledge_graph(node_label="*", max_depth=1, max_nodes=limit)
+            kg = await rag.chunk_entity_relation_graph.get_knowledge_graph(
+                node_label="*", max_depth=1, max_nodes=limit)
             nodes = [{"id": n.id, "label": n.labels[0] if n.labels else n.id,
-                      "entity_type": n.properties.get("entity_type", "")} for n in (kg.nodes if kg else [])]
+                      "entity_type": n.properties.get("entity_type", "")}
+                     for n in (kg.nodes if kg else [])]
             edges = [{"id": e.id, "source": e.source, "target": e.target,
                       "label": (e.properties.get("description", "") or e.type or "")[:30]}
                      for e in (kg.edges if kg else [])]
-            return {"nodes": nodes, "edges": edges, "total_nodes": len(nodes), "total_edges": len(edges)}
+            return {"nodes": nodes, "edges": edges,
+                    "total_nodes": len(nodes), "total_edges": len(edges)}
         except Exception as e:
             return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0, "error": str(e)}
 
-def _register_workspaces(app):
+
+def _register_workspaces(app, cfg: Config):
     @app.get("/workspaces")
     async def list_workspaces():
         ws_list = []
-        root_has = os.path.isfile(os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml"))
+        root_has = os.path.isfile(os.path.join(cfg.working_dir, "graph_chunk_entity_relation.graphml"))
         ws_list.append({"name": "default", "has_data": root_has})
-        if os.path.isdir(WORKING_DIR):
-            for entry in os.scandir(WORKING_DIR):
+        if os.path.isdir(cfg.working_dir):
+            for entry in os.scandir(cfg.working_dir):
                 if entry.is_dir() and entry.name != "default":
-                    ws_list.append({"name": entry.name, "has_data":
-                        os.path.isfile(os.path.join(entry.path, "graph_chunk_entity_relation.graphml"))})
-        return {"workspaces": ws_list, "working_dir": WORKING_DIR}
+                    has = os.path.isfile(os.path.join(entry.path, "graph_chunk_entity_relation.graphml"))
+                    ws_list.append({"name": entry.name, "has_data": has})
+        return {"workspaces": ws_list, "working_dir": cfg.working_dir}
 
     @app.post("/workspaces/{name}")
     async def create_workspace(name: str):
         safe = re.sub(r'[<>:"/\\|?*]', '_', name)
-        if safe == "default": return {"error": "不能创建名为 default 的 workspace（系统保留）"}
-        os.makedirs(os.path.join(WORKING_DIR, safe), exist_ok=True)
+        if safe == "default":
+            return {"error": "不能创建名为 default 的 workspace（系统保留）"}
+        os.makedirs(os.path.join(cfg.working_dir, safe), exist_ok=True)
         try:
-            await get_rag(safe)
-            return {"created": safe, "path": os.path.join(WORKING_DIR, safe), "status": "ok"}
+            await get_rag(cfg, safe)
+            return {"created": safe, "path": os.path.join(cfg.working_dir, safe), "status": "ok"}
         except Exception as e:
             return {"error": f"初始化失败: {e}"}
 
     @app.delete("/workspaces/{name}")
     async def delete_workspace(name: str):
         safe = re.sub(r'[<>:"/\\|?*]', '_', name)
-        if safe == "default": return {"error": "不能删除 default workspace（系统保留）"}
-        d = os.path.join(WORKING_DIR, safe)
-        if not os.path.isdir(d): return {"error": f"workspace '{safe}' 不存在"}
-        if safe in _rags: del _rags[safe]
-        import shutil; shutil.rmtree(d)
+        if safe == "default":
+            return {"error": "不能删除 default workspace（系统保留）"}
+        d = os.path.join(cfg.working_dir, safe)
+        if not os.path.isdir(d):
+            return {"error": f"workspace '{safe}' 不存在"}
+        _rags.pop(safe, None)
+        import shutil
+        shutil.rmtree(d)
         return {"deleted": safe, "status": "ok"}
 
-def _register_entities(app):
-    """实体 / 关系操作"""
+
+def _register_entities(app, cfg: Config):
     from pydantic import BaseModel
 
     class EntityEdit(BaseModel):
@@ -414,7 +532,7 @@ def _register_entities(app):
 
     @app.delete("/entities/{entity_name}")
     async def delete_entity(entity_name: str, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             result = await rag.adelete_by_entity(entity_name)
             return {"deleted": entity_name, "result": str(result)}
@@ -423,7 +541,7 @@ def _register_entities(app):
 
     @app.delete("/relations")
     async def delete_relation(source: str, target: str, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             result = await rag.adelete_by_relation(source, target)
             return {"deleted": f"{source} -> {target}", "result": str(result)}
@@ -432,7 +550,7 @@ def _register_entities(app):
 
     @app.put("/entities")
     async def edit_entity(req: EntityEdit, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             await rag.aedit_entity(req.entity_name, **req.new_data)
             return {"edited": req.entity_name, "status": "ok"}
@@ -441,7 +559,7 @@ def _register_entities(app):
 
     @app.put("/relations")
     async def edit_relation(req: RelationEdit, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             await rag.aedit_relation(req.source, req.target, **req.new_data)
             return {"edited": f"{req.source} -> {req.target}", "status": "ok"}
@@ -450,35 +568,42 @@ def _register_entities(app):
 
     @app.post("/entities/merge")
     async def merge_entities(req: MergeRequest, workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             await rag.amerge_entities(req.source, req.target)
             return {"merged": f"{req.source} -> {req.target}", "status": "ok"}
         except Exception as e:
             return {"error": str(e)}
 
-def _register_export(app):
-    """导出知识库数据"""
+
+def _register_export(app, cfg: Config):
     @app.get("/export")
     async def export_data(workspace: str = "default"):
-        rag = await get_rag(workspace)
+        rag = await get_rag(cfg, workspace)
         try:
             data = await rag.aexport_data()
             return {"workspace": workspace, "data": data}
         except Exception as e:
             return {"error": str(e)}
 
+
 # ═══════════════════════════════════════
 #  入口
 # ═══════════════════════════════════════
 
 def main():
+    parser = argparse.ArgumentParser(description="Hanako LightRAG server")
+    parser.add_argument("--config", required=True, help="Path to resolved_config.json")
+    args = parser.parse_args()
+
+    cfg = Config(args.config)
     _check_env()
-    get_rag_sync("default")
-    app = _create_app()
-    print(f"[INFO] LightRAG server starting on port {PORT}...")
+    get_rag_sync(cfg, "default")
+    app = _create_app(cfg)
+    print(f"[INFO] LightRAG server starting on port {cfg.port}...")
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=cfg.port, log_level="warning")
+
 
 if __name__ == "__main__":
     main()

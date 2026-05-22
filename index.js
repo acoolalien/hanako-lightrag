@@ -2,10 +2,18 @@
  * hanako-lightrag/index.js
  *
  * 生命周期管理：onload spawn Python sidecar，onunload kill。
+ *
+ * 配置流（唯一来源）：
+ *   config.json (ctx.config) → 用户配置 + manifest 默认值
+ *   bus.request(provider:credentials) → API 凭据
+ *   ↓                        合并
+ *   resolved_config.json      → Python 端读取（不含 API Key）
+ *   env: LLM/EMBED/RERANK_API_KEY → Python 端仅从环境变量拿密钥
  */
 
 import { spawn } from "node:child_process";
 import path from "node:path";
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import http from "node:http";
 
@@ -28,24 +36,6 @@ function healthCheck(port, timeout = 2000) {
 }
 
 // ═══════════════════════════════════════
-//  配置 → 环境变量映射（新增配置项只需在此登记）
-// ═══════════════════════════════════════
-
-const ENV_MAP = [
-  ["lightragPort",       "LIGHTRAG_PORT",       v => String(v || 9621)],
-  ["workingDir",         "LIGHTRAG_WORKING_DIR", v => v],
-  ["summaryLanguage",    "SUMMARY_LANGUAGE",     v => v || "Chinese"],
-  ["maxGleaning",        "MAX_GLEANING",         v => String(v ?? 0)],
-  ["chunkSize",          "CHUNK_SIZE",           v => String(v || 1200)],
-  ["chunkOverlapSize",   "CHUNK_OVERLAP_SIZE",   v => String(v || 100)],
-  ["entityTypes",        "ENTITY_TYPES",         v => JSON.stringify(v || [])],
-  ["defaultQueryMode",   "DEFAULT_QUERY_MODE",   v => v || "mix"],
-  ["embedModel",         "EMBED_MODEL",          v => v || "Qwen/Qwen3-Embedding-8B"],
-  ["embedDim",           "EMBED_DIM",            v => String(v || 4096)],
-  ["rerankEnabled",      "RERANK_ENABLED",       v => v ? "true" : "false"],
-];
-
-// ═══════════════════════════════════════
 //  Plugin
 // ═══════════════════════════════════════
 
@@ -55,14 +45,11 @@ export default class Plugin {
   _restarts = 0;
   _maxRestarts = 3;
 
-  // ── 配置读取 ──
+  // ── 配置读取（来源：ctx.config 已有 manifest 默认值合并，无需 || 回退） ──
   async _readConfig() {
     const ctx = this.ctx;
-    const [llmProviderId, embeddingProviderId, workingDir, summaryLanguage,
-           chunkSize, chunkOverlapSize, entityTypes, defaultQueryMode,
-           storageBackend] = await Promise.all([
-      ctx.config.get("llmProviderId"),
-      ctx.config.get("embeddingProviderId"),
+    const [workingDir, summaryLanguage, chunkSize, chunkOverlapSize,
+           entityTypes, defaultQueryMode, storageBackend] = await Promise.all([
       ctx.config.get("workingDir"),
       ctx.config.get("summaryLanguage"),
       ctx.config.get("chunkSize"),
@@ -73,100 +60,106 @@ export default class Plugin {
     ]);
 
     return {
-      port: (await ctx.config.get("lightragPort")) || 9621,
-      llmProviderId: llmProviderId || "deepseek",
-      embeddingProviderId: embeddingProviderId || "siliconflow",
+      port: await ctx.config.get("lightragPort"),
+      llmBaseUrl: await ctx.config.get("llmBaseUrl"),
+      llmModel: await ctx.config.get("llmModel"),
+      embedBaseUrl: await ctx.config.get("embedBaseUrl"),
+      embedModel: await ctx.config.get("embedModel"),
+      embedDim: await ctx.config.get("embedDim"),
+      rerankEnabled: await ctx.config.get("rerankEnabled"),
+      rerankBaseUrl: await ctx.config.get("rerankBaseUrl"),
+      rerankModel: await ctx.config.get("rerankModel"),
+      // workingDir manifest 默认值为 ""，此处解析为插件数据目录
       workingDir: workingDir || ctx.dataDir,
-      summaryLanguage: summaryLanguage || "Chinese",
-      maxGleaning: (await ctx.config.get("maxGleaning")) ?? 0,
-      chunkSize: chunkSize || 1200,
-      chunkOverlapSize: chunkOverlapSize || 100,
+      summaryLanguage,
+      maxGleaning: await ctx.config.get("maxGleaning"),
+      chunkSize,
+      chunkOverlapSize,
       entityTypes: entityTypes || [],
-      defaultQueryMode: defaultQueryMode || "mix",
-      embedModel: (await ctx.config.get("embedModel")) || "Qwen/Qwen3-Embedding-8B",
-      embedDim: (await ctx.config.get("embedDim")) || 4096,
-      rerankEnabled: (await ctx.config.get("rerankEnabled")) || false,
-      rerankProviderId: (await ctx.config.get("rerankProviderId")) || "",
-      storageBackend: storageBackend || "json",
+      defaultQueryMode,
+      storageBackend,
     };
   }
 
-  // ── Provider 凭据 ──
-  async _fetchCredentials(cfg) {
+  // ── 校验 API Key 环境变量（仅警告，不阻止启动，Python 侧会自行报错） ──
+  _checkEnvKeys() {
     const ctx = this.ctx;
-    let llmCreds = {}, embedCreds = {}, rerankCreds = {};
-
-    try { llmCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.llmProviderId })) || {}; }
-    catch (e) { ctx.log.warn(`LLM provider "${cfg.llmProviderId}" not found: ${e.message}`); }
-
-    try { embedCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.embeddingProviderId })) || {}; }
-    catch (e) { ctx.log.warn(`Embedding provider "${cfg.embeddingProviderId}" not found: ${e.message}`); }
-
-    if (cfg.rerankEnabled) {
-      if (!cfg.rerankProviderId) {
-        ctx.log.warn("Rerank 已启用但 rerankProviderId 未配置，重排功能不生效。请在插件设置中配置 Rerank Provider ID。");
-      } else {
-        try { rerankCreds = (await ctx.bus.request("provider:credentials", { providerId: cfg.rerankProviderId })) || {}; }
-        catch (e) { ctx.log.warn(`Rerank provider "${cfg.rerankProviderId}" not found: ${e.message}`); }
-        if (!rerankCreds.apiKey) {
-          ctx.log.warn(`Rerank provider "${cfg.rerankProviderId}" 凭据缺失，重排功能不生效。请检查 Provider 配置。`);
-        }
-      }
-    }
-
-    if (!llmCreds.apiKey) { ctx.log.error(`LLM provider "${cfg.llmProviderId}" is not configured.`); return null; }
-    if (!embedCreds.apiKey) { ctx.log.error(`Embedding provider "${cfg.embeddingProviderId}" is not configured.`); return null; }
-    return { llmCreds, embedCreds, rerankCreds };
+    if (!process.env.LLM_API_KEY) ctx.log.error("LLM_API_KEY 环境变量未设置。请在系统环境变量中配置后重启 Hanako。");
+    if (!process.env.EMBED_API_KEY) ctx.log.error("EMBED_API_KEY 环境变量未设置。请在系统环境变量中配置后重启 Hanako。");
   }
 
-  // ── 构建环境变量 ──
-  async _buildEnv(cfg, creds) {
-    const ctx = this.ctx;
-    const env = { ...process.env };
+  // ── 生成 resolved_config.json（全部从 cfg 取值，不依赖 Provider 凭据） ──
+  async _writeResolvedConfig(cfg) {
+    const dataDir = this.ctx.dataDir;
+    const configPath = path.join(dataDir, "config.resolved.json");
 
-    // cfg → env 声明式映射
-    for (const [cfgKey, envKey, xform] of ENV_MAP) {
-      env[envKey] = xform(cfg[cfgKey]);
-    }
-
-    // 凭据注入
-    env.LLM_API_KEY = creds.llmCreds.apiKey;
-    env.LLM_BASE_URL = creds.llmCreds.baseUrl || "";
-    env.LLM_API_SPEC = creds.llmCreds.api || "openai-completions";
-    env.EMBED_API_KEY = creds.embedCreds.apiKey;
-    env.EMBED_BASE_URL = creds.embedCreds.baseUrl || "";
-    env.EMBED_API_SPEC = creds.embedCreds.api || "openai-completions";
-
-    if (cfg.rerankEnabled && creds.rerankCreds?.apiKey) {
-      env.RERANK_API_KEY = creds.rerankCreds.apiKey;
-      env.RERANK_BASE_URL = creds.rerankCreds.baseUrl || "";
-      env.RERANK_MODEL = creds.rerankCreds.model || "";
-    }
+    const resolved = {
+      port: cfg.port,
+      working_dir: cfg.workingDir,
+      llm: {
+        base_url: cfg.llmBaseUrl,
+        model: cfg.llmModel,
+      },
+      embedding: {
+        base_url: cfg.embedBaseUrl,
+        model: cfg.embedModel,
+        dim: cfg.embedDim,
+        max_tokens: 8192,
+      },
+      rerank: {
+        enabled: cfg.rerankEnabled,
+        base_url: cfg.rerankBaseUrl,
+        model: cfg.rerankModel,
+      },
+      chunk: {
+        size: cfg.chunkSize,
+        overlap: cfg.chunkOverlapSize,
+      },
+      summary_language: cfg.summaryLanguage,
+      max_gleaning: cfg.maxGleaning,
+      entity_types: cfg.entityTypes,
+      default_query_mode: cfg.defaultQueryMode,
+      storage_backend: cfg.storageBackend,
+    };
 
     if (cfg.storageBackend === "postgres") {
-      const pgPassword = (await ctx.config.get("pgPassword")) || "";
-      if (!pgPassword) { ctx.log.error("PostgreSQL backend selected but pgPassword is not configured."); return null; }
-      env.STORAGE_BACKEND = "postgres";
-      env.POSTGRES_HOST = (await ctx.config.get("pgHost")) || "localhost";
-      env.POSTGRES_PORT = String((await ctx.config.get("pgPort")) || 5432);
-      env.POSTGRES_DATABASE = (await ctx.config.get("pgDatabase")) || "lightrag";
-      env.POSTGRES_USER = (await ctx.config.get("pgUser")) || "postgres";
-      env.POSTGRES_PASSWORD = pgPassword;
+      const [pgHost, pgPort, pgDb, pgUser, pgPassword] = await Promise.all([
+        this.ctx.config.get("pgHost"),
+        this.ctx.config.get("pgPort"),
+        this.ctx.config.get("pgDatabase"),
+        this.ctx.config.get("pgUser"),
+        this.ctx.config.get("pgPassword"),
+      ]);
+      resolved.postgres = {
+        host: pgHost,
+        port: pgPort,
+        database: pgDb,
+        user: pgUser,
+        password: pgPassword || "",
+      };
     }
-    return env;
+
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(resolved, null, 2), "utf-8");
+    this.ctx.log.info(`Resolved config written to ${configPath}`);
+    return configPath;
+  }
+
+  // ── 构建环境变量（直接透传 process.env，Python 端读 LLM/EMBED/RERANK_API_KEY） ──
+  _buildEnv() {
+    return { ...process.env };
   }
 
   // ── 启动 Python sidecar ──
-  _spawnServer(env) {
+  _spawnServer(env, configPath) {
     const ctx = this.ctx;
     this._proc?.kill();
     this._proc = null;
 
     const pyScript = path.join(__dirname, "py", "server_manager.py");
-    const port = env.LIGHTRAG_PORT;
-    ctx.log.info(`Starting LightRAG server on port ${port}...`);
+    ctx.log.info(`Starting LightRAG server (config: ${configPath})...`);
 
-    const proc = spawn("python", ["-u", pyScript], {
+    const proc = spawn("python", ["-u", pyScript, "--config", configPath], {
       env, cwd: __dirname, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
     });
 
@@ -178,7 +171,7 @@ export default class Plugin {
       const line = d.toString().trim();
       if (!line) return;
       if (/address already in use|10048|10013/.test(line)) {
-        ctx.log.error(`Port ${env.LIGHTRAG_PORT} is already in use. Change lightragPort in plugin settings.`);
+        ctx.log.error(`Port ${env.LIGHTRAG_PORT || "?"} is already in use. Change lightragPort in plugin settings.`);
       } else if (/ERROR|FATAL|Traceback|WARNING/.test(line)) {
         ctx.log.warn(`[lightrag:err] ${line}`);
       }
@@ -191,7 +184,7 @@ export default class Plugin {
         this._restarts++;
         ctx.log.info(`Restarting LightRAG (attempt ${this._restarts}/${this._maxRestarts})...`);
         setTimeout(() => {
-          if (this._proc === proc) this._spawnServer(env);
+          if (this._proc === proc) this._spawnServer(env, configPath);
         }, 2000);
       } else {
         this._proc = null;
@@ -207,13 +200,12 @@ export default class Plugin {
     const cfg = await this._readConfig();
     this._port = cfg.port;
 
-    const creds = await this._fetchCredentials(cfg);
-    if (!creds) return;
+    this._checkEnvKeys();
 
-    const env = await this._buildEnv(cfg, creds);
-    if (!env) return;
+    const configPath = await this._writeResolvedConfig(cfg);
+    const env = this._buildEnv();
 
-    this._spawnServer(env);
+    this._spawnServer(env, configPath);
 
     // 非阻塞健康检查
     this._restarts = 0;

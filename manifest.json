@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "hanako-lightrag",
   "name": "LightRAG 知识库",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "基于 LightRAG 的知识图谱 RAG 引擎。支持文档索引、语义检索、知识图谱可视化和多模式查询（local/global/hybrid/mix/naive）。",
   "minAppVersion": "0.140.0",
   "trust": "full-access",
@@ -18,17 +18,23 @@
     },
     "configuration": {
       "properties": {
-        "llmProviderId": {
+        "llmBaseUrl": {
           "type": "string",
-          "default": "deepseek",
-          "title": "LLM Provider ID",
-          "description": "Hanako 中配置的 LLM Provider 的 ID，用于实体提取和查询生成。"
+          "default": "https://api.deepseek.com/v1",
+          "title": "LLM API 地址",
+          "description": "LLM API 的基础 URL（含路径前缀）。"
         },
-        "embeddingProviderId": {
+        "llmModel": {
           "type": "string",
-          "default": "siliconflow",
-          "title": "Embedding Provider ID",
-          "description": "Hanako 中配置的 Embedding Provider 的 ID，用于向量嵌入。"
+          "default": "deepseek-v4-flash",
+          "title": "LLM 模型名",
+          "description": "LLM 模型名称，发送给 API 时用作 model 参数。"
+        },
+        "embedBaseUrl": {
+          "type": "string",
+          "default": "https://api.siliconflow.cn/v1",
+          "title": "Embedding API 地址",
+          "description": "Embedding API 的基础 URL（含路径前缀）。"
         },
         "embedModel": {
           "type": "string",
@@ -48,11 +54,17 @@
           "title": "启用重排",
           "description": "是否在 mix 模式下启用 Reranker 对检索结果重排。需配置 rerankProviderId。"
         },
-        "rerankProviderId": {
+        "rerankBaseUrl": {
           "type": "string",
           "default": "",
-          "title": "Rerank Provider ID",
-          "description": "Reranker 的 Provider ID。留空则不启用重排。"
+          "title": "Rerank API 地址",
+          "description": "Reranker API 的基础 URL。启用重排时必填。"
+        },
+        "rerankModel": {
+          "type": "string",
+          "default": "",
+          "title": "Rerank 模型名",
+          "description": "Reranker 模型名称。启用重排时必填。"
         },
         "lightragPort": {
           "type": "number",
