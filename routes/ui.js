@@ -86,14 +86,18 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
     data.edges.forEach(function(e){if(degMap.hasOwnProperty(e.source))degMap[e.source]++;if(degMap.hasOwnProperty(e.target))degMap[e.target]++});
     var maxDeg=1; data.nodes.forEach(function(n){var d=degMap[n.id]||0;if(d>maxDeg)maxDeg=d});
     function degToSize(d){return Math.round(6+44*d/maxDeg)}
+    // 度数阈值：前 15% 高连边节点视为「重要」，低缩放下始终显示标签
+    var degVals=Object.values(degMap).sort(function(a,b){return b-a});
+    var impIdx=Math.min(Math.ceil(degVals.length*0.15),degVals.length-1);
+    var impThreshold=degVals[impIdx]||1;
 
-    data.nodes.forEach(function(n){els.push({data:{id:n.id,label:n.id,color:D.COLORS[n.type]||D.COLORS.other,size:degToSize(degMap[n.id]||0)}})});
+    data.nodes.forEach(function(n){var d=degMap[n.id]||0;els.push({data:{id:n.id,label:n.id,degree:d,isImportant:d>=impThreshold,color:D.COLORS[n.type]||D.COLORS.other,size:degToSize(d)}})});
     data.edges.forEach(function(e){els.push({data:{id:e.id,source:e.source,target:e.target,label:e.label||''}})});
     var cy=cytoscape({
       container:cyEl,elements:els,
       style:[
         {selector:'node',style:{'background-color':'data(color)',width:'data(size)',height:'data(size)',label:'data(label)',color:'#c9d1d9','font-size':9,'text-valign':'center','text-halign':'center','text-background-opacity':0.5,'text-background-color':'#0d1117','text-background-padding':'2px','border-width':1,'border-color':'#30363d','transition-property':'width,height,border-width','transition-duration':150}},
-        {selector:'edge',style:{width:0,'line-color':'#30363d','target-arrow-color':'#30363d','target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier',label:'','font-size':8,color:'#8b949e',opacity:0,'transition-property':'opacity,width','transition-duration':200}},
+        {selector:'edge',style:{width:0.5,'line-color':'#30363d','target-arrow-color':'#30363d','target-arrow-shape':'triangle','arrow-scale':0.7,'curve-style':'bezier',label:'','font-size':8,color:'#8b949e',opacity:0.15,'transition-property':'opacity,width','transition-duration':200}},
         {selector:'node:selected',style:{'border-color':'#f78166','border-width':3}},
         {selector:'node.focus',style:{'border-color':'#f78166','border-width':3}},
         {selector:'edge.show',style:{opacity:1,width:1.5,'line-color':'#8b949e','target-arrow-color':'#8b949e'}},
@@ -105,6 +109,20 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
     });
     window.__cy__=cy;
     activeNode=null;
+    // 缩放感知：<1.5x 只显示重要节点标签，>=1.5x 显示全部
+    var labelPending=false;
+    function syncLabels(){
+      if(labelPending)return;labelPending=true;
+      requestAnimationFrame(function(){
+        labelPending=false;
+        var z=cy.zoom(),showAll=z>1.5;
+        cy.batch(function(){
+          cy.nodes().forEach(function(n){n.style('font-size',(showAll||n.data('isImportant'))?9:0)});
+        });
+      });
+    }
+    cy.on('zoom',syncLabels);
+    syncLabels();
     cy.on('tap','node',function(e){
       var n=e.target;
       if(activeNode&&activeNode.id()===n.id()){hideEdges();return}
@@ -128,7 +146,7 @@ window.__DATA__={graph:$GRAPH$,COLORS:$COLORS$,TYPES:$TYPES$,workspace:"$WS_KEY$
   window.switchWS=function(ws){
     D.workspace=ws;
     // 并发获取图谱和文档统计
-    var gUrl=D.base+'/graph?workspace='+encodeURIComponent(ws)+'&limit=200';
+    var gUrl=D.base+'/graph?workspace='+encodeURIComponent(ws)+'&limit=1000';
     var dUrl=D.base+'/documents?workspace='+encodeURIComponent(ws);
     Promise.all([fetch(gUrl).then(function(r){return r.json()}),fetch(dUrl).then(function(r){return r.json()})]).then(function(results){
       var raw=results[0]||{nodes:[],edges:[]};
@@ -180,7 +198,7 @@ export default function registerRoutes(app, ctx) {
       .map(([k,v]) => `<option value="${esc(k)}" ${k===ws?'selected':''}>${esc(String(v))}</option>`).join("");
 
     let graph = null, docs = null;
-    try { graph = await fetchJSON(`${base}/graph?workspace=${encodeURIComponent(ws)}&limit=200`); } catch (e) {}
+    try { graph = await fetchJSON(`${base}/graph?workspace=${encodeURIComponent(ws)}&limit=1000`); } catch (e) {}
     try { docs = await fetchJSON(`${base}/documents?workspace=${encodeURIComponent(ws)}`); } catch (e) {}
     const RAW = graph || { nodes: [], edges: [] };
     const docList = docs?.documents || [];

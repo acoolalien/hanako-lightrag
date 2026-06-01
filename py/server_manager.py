@@ -458,7 +458,7 @@ def _register_docs(app, IR, cfg: Config):
 
 def _register_graph(app, cfg: Config):
     @app.get("/graph")
-    async def get_graph(workspace: str = "default", limit: int = 200):
+    async def get_graph(workspace: str = "default", limit: int = 1000):
         rag = await get_rag(cfg, workspace)
         try:
             kg = await rag.chunk_entity_relation_graph.get_knowledge_graph(
