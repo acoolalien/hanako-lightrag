@@ -12,7 +12,7 @@ description: >
 | 工具 | 用途 |
 |------|------|
 | `lightrag_query` | 查询知识库，6 种模式 + 跨库 |
-| `lightrag_insert` | 索引文档（批量，自动去重） |
+| `lightrag_insert` | 索引文档（批量，自动去重）。支持 `text`（直接传内容）和 `sourceFile`（文件路径，工具层自动读取）二选一。 |
 | `lightrag_doc_delete` | 删除单篇文档（需 `confirm: true`） |
 | `lightrag_status` | 查看已索引文档列表和服务健康 |
 | `lightrag_entity_delete` | 删除错误实体 |
@@ -69,9 +69,13 @@ description: >
 
 1. **首次使用**：先确认文档类型和用途 → 决定是否创建独立知识库 → 批量索引
 2. **批量索引**：多个文件多次调用 `lightrag_insert`，每次传入单文件内容。`filePath` 参数用于溯源
-3. **增量更新**：文件修改后再次 insert 同一文件，LightRAG 自动按内容 MD5 去重
-4. **追踪进度**：每次 insert 返回 `track_id`，用 `lightrag_status` 查看处理状态
-5. **知识库隔离**：不同项目的文档放入不同 workspace，避免跨作品概念污染
+3. **索引方式选择**：
+   - 索引本地文件（.md/.txt/.json 等文本格式）→ 用 `sourceFile="绝对路径"`，工具层自动读取，无需手动读文件
+   - 索引文本片段、剪报、对话记录 → 用 `text="内容"`
+   - 两个参数互斥：传了 `sourceFile` 就不需要传 `text`，工具层会读取文件内容填入
+4. **增量更新**：文件修改后再次 insert 同一文件，LightRAG 自动按内容 MD5 去重
+5. **追踪进度**：每次 insert 返回 `track_id`，用 `lightrag_status` 查看处理进度
+6. **知识库隔离**：不同项目的文档放入不同 workspace，避免跨作品概念污染
 
 ## 上下文预算规则
 

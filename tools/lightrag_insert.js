@@ -1,6 +1,7 @@
 /**
  * tools/lightrag_insert.js — LightRAG 文档索引
  */
+import fs from "node:fs";
 import { post, fail } from "./_client.js";
 
 export const name = "lightrag_insert";
@@ -12,18 +13,25 @@ export const description =
 export const parameters = {
   type: "object",
   properties: {
-    text: { type: "string", description: "要索引的文本内容。" },
-    filePath: { type: "string", description: "文件路径（可选），用于溯源引用。" },
+    text: { type: "string", description: "要索引的文本内容。与 sourceFile 二选一。" },
+    sourceFile: { type: "string", description: "源文件绝对路径。与 text 二选一，提供后自动读取文件内容索引。" },
+    filePath: { type: "string", description: "文件路径（可选），用于溯源引用。不传时默认使用 sourceFile 值。" },
     workspace: { type: "string", default: "default", description: "目标知识库名称。" },
   },
-  required: ["text"],
 };
 
 export async function execute(input, ctx) {
+  // ── 文件路径 → 文本 ──
+  if (input.sourceFile) {
+    try { input.text = fs.readFileSync(input.sourceFile, "utf-8"); }
+    catch (e) { return { content: [{ type: "text", text: `读取文件失败：${e.message}` }] }; }
+    if (!input.filePath) input.filePath = input.sourceFile;
+  }
+
   const ws = input.workspace || "default";
 
   if (!input.text || input.text.trim().length === 0) {
-    return { content: [{ type: "text", text: "文本内容为空，无需索引。" }] };
+    return { content: [{ type: "text", text: "请提供 text（文本内容）或 sourceFile（文件路径）。" }] };
   }
 
   try {

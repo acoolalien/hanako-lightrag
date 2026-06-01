@@ -46,7 +46,7 @@ setx EMBED_API_KEY "sk-你的Embedding_API密钥"
 | 工具 | 说明 |
 |------|------|
 | `lightrag_query` | 查询知识库（6 种模式，支持跨库） |
-| `lightrag_insert` | 索引文档（自动去重） |
+| `lightrag_insert` | 索引文档（自动去重）。支持 `text`（直接传内容）和 `sourceFile`（文件路径，工具层自动读取）二选一 |
 | `lightrag_status` | 查看已索引文档和服务健康 |
 | `lightrag_ws_list` | 列出所有知识库 |
 | `lightrag_ws_create` | 创建新知识库 |
@@ -133,6 +133,11 @@ Python Engine
 ```
 
 ## 变更记录
+
+### v0.5.1
+
+- **新增 `sourceFile` 参数**：`lightrag_insert` 工具新增 `sourceFile` 可选参数，传入本地文件绝对路径后由工具层自动读取内容索引，无需 Agent 先读后传。与原有 `text` 参数二选一使用
+- **兼容性**：`text` 传参方式完全不变，零 break
 
 ### v0.5.0
 
