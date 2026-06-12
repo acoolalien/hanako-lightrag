@@ -220,7 +220,7 @@ export default class Plugin {
       this.ctx.log.info("Stopping LightRAG server...");
       this._proc.kill("SIGTERM");
       await sleep(3000);
-      if (!this._proc.killed) this._proc.kill("SIGKILL");
+      if (this._proc && !this._proc.killed) this._proc.kill("SIGKILL");
       this._proc = null;
       this.ctx.log.info("LightRAG server stopped");
     }
